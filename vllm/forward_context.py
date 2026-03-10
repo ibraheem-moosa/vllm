@@ -191,6 +191,7 @@ class ForwardContext:
     attn_metadata: dict[str, AttentionMetadata] | list[dict[str, AttentionMetadata]]
     slot_mapping: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]]
     kv_update_slot_mapping: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]]
+    kv_update_alias_groups: Any | None
     """
     Type Dict[str, AttentionMetadata] for v1, map from layer_name of each 
     attention layer to its attention metadata
@@ -273,6 +274,7 @@ def create_forward_context(
     ubatch_slices: UBatchSlices | None = None,
     slot_mapping: dict[str, torch.Tensor] | None = None,
     kv_update_slot_mapping: dict[str, torch.Tensor] | None = None,
+    kv_update_alias_groups: Any | None = None,
     additional_kwargs: dict[str, Any] | None = None,
     skip_compiled: bool = False,
 ):
@@ -297,6 +299,7 @@ def create_forward_context(
         slot_mapping=slot_mapping or {},
         # Default to regular slot mappings to keep current behavior unchanged.
         kv_update_slot_mapping=kv_update_slot_mapping or slot_mapping or {},
+        kv_update_alias_groups=kv_update_alias_groups,
         dp_metadata=dp_metadata,
         cudagraph_runtime_mode=cudagraph_runtime_mode,
         batch_descriptor=batch_descriptor,
@@ -333,6 +336,7 @@ def set_forward_context(
     ubatch_slices: UBatchSlices | None = None,
     slot_mapping: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None = None,
     kv_update_slot_mapping: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None = None,
+    kv_update_alias_groups: Any | None = None,
     skip_compiled: bool = False,
 ):
     """A context manager that stores the current forward context,
@@ -393,6 +397,7 @@ def set_forward_context(
         ubatch_slices,
         slot_mapping,
         kv_update_slot_mapping,
+        kv_update_alias_groups,
         additional_kwargs,
         skip_compiled,
     )
