@@ -3270,6 +3270,16 @@ class GPUModelRunner(
 
         return slot_mappings_by_gid, slot_mappings_by_layer
 
+    def _get_kv_update_slot_mappings(
+        self,
+        slot_mappings: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None,
+    ) -> dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None:
+        """Hook for token-level KV update routing.
+
+        By default this returns regular slot mappings to preserve existing behavior.
+        """
+        return slot_mappings
+
     @torch.inference_mode()
     def execute_model(
         self,
@@ -3437,6 +3447,7 @@ class GPUModelRunner(
                 num_tokens_unpadded=num_tokens_unpadded,
                 ubatch_slices=ubatch_slices_padded,
             )
+            kv_update_slot_mappings = self._get_kv_update_slot_mappings(slot_mappings)
 
             attn_metadata, spec_decode_common_attn_metadata = (
                 self._build_attention_metadata(
@@ -3492,6 +3503,7 @@ class GPUModelRunner(
                 batch_descriptor=batch_desc,
                 ubatch_slices=ubatch_slices_padded,
                 slot_mapping=slot_mappings,
+                kv_update_slot_mapping=kv_update_slot_mappings,
                 skip_compiled=has_encoder_input,
             ),
             record_function_or_nullcontext("gpu_model_runner: forward"),
@@ -4596,6 +4608,7 @@ class GPUModelRunner(
             num_tokens_unpadded=num_tokens_unpadded,
             ubatch_slices=ubatch_slices_padded,
         )
+        kv_update_slot_mappings = self._get_kv_update_slot_mappings(slot_mappings)
 
         # If force_attention is True, we always capture attention. Otherwise,
         # it only happens for cudagraph_runtime_mode=FULL.
@@ -4692,6 +4705,7 @@ class GPUModelRunner(
                     batch_descriptor=batch_desc,
                     ubatch_slices=ubatch_slices_padded,
                     slot_mapping=slot_mappings,
+                    kv_update_slot_mapping=kv_update_slot_mappings,
                 ),
             ):
                 outputs = self.model(

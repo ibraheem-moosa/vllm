@@ -829,11 +829,12 @@ def unified_kv_cache_update(
     attn_layer = forward_context.no_compile_layers[layer_name]
     kv_cache = attn_layer.kv_cache[forward_context.virtual_engine]
 
-    slot_mapping = forward_context.slot_mapping
-    assert isinstance(slot_mapping, dict), (
-        f"Expected slot_mapping to be a dict, got {type(slot_mapping)}. "
+    kv_update_slot_mapping = forward_context.kv_update_slot_mapping
+    assert isinstance(kv_update_slot_mapping, dict), (
+        "Expected kv_update_slot_mapping to be a dict, "
+        f"got {type(kv_update_slot_mapping)}."
     )
-    layer_slot_mapping = slot_mapping.get(layer_name)
+    layer_slot_mapping = kv_update_slot_mapping.get(layer_name)
     if layer_slot_mapping is not None:
         assert hasattr(attn_layer.impl, "do_kv_cache_update"), (
             f"{attn_layer.impl.__class__.__name__} does not support kv cache update"
