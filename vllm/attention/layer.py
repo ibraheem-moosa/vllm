@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Attention layer."""
 
+import copy
+
 from typing import cast
 
 import torch
@@ -784,7 +786,88 @@ def get_attention_context(
         attn_metadata = attn_metadata[layer_name]
     attn_layer: Attention | MLAAttention = forward_context.no_compile_layers[layer_name]
     kv_cache = attn_layer.kv_cache[forward_context.virtual_engine]
+    attn_metadata = _get_layer_read_mapped_metadata(
+        forward_context=forward_context,
+        layer_name=layer_name,
+        attn_metadata=attn_metadata,
+    )
     return attn_metadata, attn_layer, kv_cache
+
+
+def _get_layer_read_mapped_metadata(
+    *,
+    forward_context: ForwardContext,
+    layer_name: str,
+    attn_metadata: dict | object | None,
+) -> dict | object | None:
+    """Apply per-layer KV read mapping when provided.
+
+    Fast path returns immediately for the default configuration where
+    kv_read_mapping points to the same object as slot_mapping.
+
+    Supported per-layer mapping payloads:
+    1. torch.Tensor: interpreted as replacement slot_mapping
+    2. dict with optional {"slot_mapping": Tensor, "block_table": Tensor}
+    3. tuple/list length 2: (block_table, slot_mapping)
+    """
+    if attn_metadata is None:
+        return attn_metadata
+
+    kv_read_mapping = forward_context.kv_read_mapping
+    if kv_read_mapping is forward_context.slot_mapping:
+        return attn_metadata
+    if not isinstance(kv_read_mapping, dict):
+        return attn_metadata
+
+    layer_mapping = kv_read_mapping.get(layer_name)
+    if layer_mapping is None:
+        return attn_metadata
+
+    new_block_table = None
+    new_slot_mapping = None
+
+    if torch.is_tensor(layer_mapping):
+        new_slot_mapping = layer_mapping
+    elif isinstance(layer_mapping, dict):
+        cand_block_table = layer_mapping.get("block_table")
+        cand_slot_mapping = layer_mapping.get("slot_mapping")
+        if torch.is_tensor(cand_block_table):
+            new_block_table = cand_block_table
+        if torch.is_tensor(cand_slot_mapping):
+            new_slot_mapping = cand_slot_mapping
+    elif (
+        isinstance(layer_mapping, (tuple, list))
+        and len(layer_mapping) == 2
+        and torch.is_tensor(layer_mapping[0])
+        and torch.is_tensor(layer_mapping[1])
+    ):
+        new_block_table = layer_mapping[0]
+        new_slot_mapping = layer_mapping[1]
+    else:
+        return attn_metadata
+
+    curr_block_table = getattr(attn_metadata, "block_table", None)
+    curr_slot_mapping = getattr(attn_metadata, "slot_mapping", None)
+
+    if new_block_table is None:
+        new_block_table = curr_block_table
+    if new_slot_mapping is None:
+        new_slot_mapping = curr_slot_mapping
+
+    if new_block_table is curr_block_table and new_slot_mapping is curr_slot_mapping:
+        return attn_metadata
+
+    if new_block_table is not None and not hasattr(attn_metadata, "block_table"):
+        return attn_metadata
+    if new_slot_mapping is not None and not hasattr(attn_metadata, "slot_mapping"):
+        return attn_metadata
+
+    mapped_metadata = copy.copy(attn_metadata)
+    if new_block_table is not None:
+        mapped_metadata.block_table = new_block_table
+    if new_slot_mapping is not None:
+        mapped_metadata.slot_mapping = new_slot_mapping
+    return mapped_metadata
 
 
 @maybe_transfer_kv_layer
