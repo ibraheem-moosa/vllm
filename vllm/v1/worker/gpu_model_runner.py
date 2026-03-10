@@ -3278,7 +3278,62 @@ class GPUModelRunner(
 
         By default this returns regular slot mappings to preserve existing behavior.
         """
-        return slot_mappings
+        if slot_mappings is None:
+            return None
+
+        hf_config = getattr(self.model_config, "hf_config", None)
+        dynamic_kv_aliasing = bool(
+            hf_config is not None
+            and getattr(hf_config, "acl_dynamic_kv_aliasing", False)
+        )
+        if not dynamic_kv_aliasing:
+            return slot_mappings
+
+        provider = getattr(self.model, "get_kv_update_slot_mappings", None)
+        if provider is None:
+            logger.warning_once(
+                "acl_dynamic_kv_aliasing is enabled, but model does not provide "
+                "`get_kv_update_slot_mappings`; using default slot mappings."
+            )
+            return slot_mappings
+
+        try:
+            kv_update_slot_mappings = provider(
+                slot_mappings=slot_mappings,
+                shared_kv_cache_layers=self.shared_kv_cache_layers,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to get KV update slot mappings from model callback; "
+                "using default slot mappings."
+            )
+            return slot_mappings
+
+        if kv_update_slot_mappings is None:
+            return slot_mappings
+
+        if isinstance(slot_mappings, list) != isinstance(kv_update_slot_mappings, list):
+            logger.warning_once(
+                "Model returned incompatible kv_update_slot_mappings type; "
+                "using default slot mappings."
+            )
+            return slot_mappings
+
+        if isinstance(slot_mappings, dict) and not isinstance(kv_update_slot_mappings, dict):
+            logger.warning_once(
+                "Model returned non-dict kv_update_slot_mappings for non-ubatch "
+                "execution; using default slot mappings."
+            )
+            return slot_mappings
+
+        if isinstance(slot_mappings, list) and not isinstance(kv_update_slot_mappings, list):
+            logger.warning_once(
+                "Model returned non-list kv_update_slot_mappings for ubatch "
+                "execution; using default slot mappings."
+            )
+            return slot_mappings
+
+        return kv_update_slot_mappings
 
     @torch.inference_mode()
     def execute_model(
