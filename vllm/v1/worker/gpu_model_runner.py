@@ -3335,6 +3335,71 @@ class GPUModelRunner(
 
         return kv_update_slot_mappings
 
+    def _get_kv_read_mappings(
+        self,
+        slot_mappings: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None,
+    ) -> dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None:
+        """Hook for token-level KV read routing.
+
+        By default this returns regular slot mappings to preserve existing behavior.
+        """
+        if slot_mappings is None:
+            return None
+
+        hf_config = getattr(self.model_config, "hf_config", None)
+        dynamic_kv_aliasing = bool(
+            hf_config is not None
+            and getattr(hf_config, "acl_dynamic_kv_aliasing", False)
+        )
+        if not dynamic_kv_aliasing:
+            return slot_mappings
+
+        provider = getattr(self.model, "get_kv_read_mappings", None)
+        if provider is None:
+            logger.warning_once(
+                "acl_dynamic_kv_aliasing is enabled, but model does not provide "
+                "`get_kv_read_mappings`; using default read mappings."
+            )
+            return slot_mappings
+
+        try:
+            kv_read_mappings = provider(
+                slot_mappings=slot_mappings,
+                shared_kv_cache_layers=self.shared_kv_cache_layers,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to get KV read mappings from model callback; "
+                "using default read mappings."
+            )
+            return slot_mappings
+
+        if kv_read_mappings is None:
+            return slot_mappings
+
+        if isinstance(slot_mappings, list) != isinstance(kv_read_mappings, list):
+            logger.warning_once(
+                "Model returned incompatible kv_read_mappings type; "
+                "using default read mappings."
+            )
+            return slot_mappings
+
+        if isinstance(slot_mappings, dict) and not isinstance(kv_read_mappings, dict):
+            logger.warning_once(
+                "Model returned non-dict kv_read_mappings for non-ubatch "
+                "execution; using default read mappings."
+            )
+            return slot_mappings
+
+        if isinstance(slot_mappings, list) and not isinstance(kv_read_mappings, list):
+            logger.warning_once(
+                "Model returned non-list kv_read_mappings for ubatch "
+                "execution; using default read mappings."
+            )
+            return slot_mappings
+
+        return kv_read_mappings
+
     @torch.inference_mode()
     def execute_model(
         self,
@@ -3503,6 +3568,7 @@ class GPUModelRunner(
                 ubatch_slices=ubatch_slices_padded,
             )
             kv_update_slot_mappings = self._get_kv_update_slot_mappings(slot_mappings)
+            kv_read_mappings = self._get_kv_read_mappings(slot_mappings)
 
             attn_metadata, spec_decode_common_attn_metadata = (
                 self._build_attention_metadata(
@@ -3559,6 +3625,7 @@ class GPUModelRunner(
                 ubatch_slices=ubatch_slices_padded,
                 slot_mapping=slot_mappings,
                 kv_update_slot_mapping=kv_update_slot_mappings,
+                kv_read_mapping=kv_read_mappings,
                 skip_compiled=has_encoder_input,
             ),
             record_function_or_nullcontext("gpu_model_runner: forward"),
@@ -4664,6 +4731,7 @@ class GPUModelRunner(
             ubatch_slices=ubatch_slices_padded,
         )
         kv_update_slot_mappings = self._get_kv_update_slot_mappings(slot_mappings)
+        kv_read_mappings = self._get_kv_read_mappings(slot_mappings)
 
         # If force_attention is True, we always capture attention. Otherwise,
         # it only happens for cudagraph_runtime_mode=FULL.
@@ -4761,6 +4829,7 @@ class GPUModelRunner(
                     ubatch_slices=ubatch_slices_padded,
                     slot_mapping=slot_mappings,
                     kv_update_slot_mapping=kv_update_slot_mappings,
+                    kv_read_mapping=kv_read_mappings,
                 ),
             ):
                 outputs = self.model(

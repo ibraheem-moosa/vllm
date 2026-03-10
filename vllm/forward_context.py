@@ -191,6 +191,7 @@ class ForwardContext:
     attn_metadata: dict[str, AttentionMetadata] | list[dict[str, AttentionMetadata]]
     slot_mapping: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]]
     kv_update_slot_mapping: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]]
+    kv_read_mapping: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]]
     kv_update_alias_groups: Any | None
     """
     Type Dict[str, AttentionMetadata] for v1, map from layer_name of each 
@@ -272,8 +273,9 @@ def create_forward_context(
     cudagraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE,
     batch_descriptor: BatchDescriptor | None = None,
     ubatch_slices: UBatchSlices | None = None,
-    slot_mapping: dict[str, torch.Tensor] | None = None,
-    kv_update_slot_mapping: dict[str, torch.Tensor] | None = None,
+    slot_mapping: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None = None,
+    kv_update_slot_mapping: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None = None,
+    kv_read_mapping: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None = None,
     kv_update_alias_groups: Any | None = None,
     additional_kwargs: dict[str, Any] | None = None,
     skip_compiled: bool = False,
@@ -299,6 +301,8 @@ def create_forward_context(
         slot_mapping=slot_mapping or {},
         # Default to regular slot mappings to keep current behavior unchanged.
         kv_update_slot_mapping=kv_update_slot_mapping or slot_mapping or {},
+        # Default to regular slot mappings to keep current behavior unchanged.
+        kv_read_mapping=kv_read_mapping or slot_mapping or {},
         kv_update_alias_groups=kv_update_alias_groups,
         dp_metadata=dp_metadata,
         cudagraph_runtime_mode=cudagraph_runtime_mode,
@@ -336,6 +340,7 @@ def set_forward_context(
     ubatch_slices: UBatchSlices | None = None,
     slot_mapping: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None = None,
     kv_update_slot_mapping: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None = None,
+    kv_read_mapping: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None = None,
     kv_update_alias_groups: Any | None = None,
     skip_compiled: bool = False,
 ):
@@ -397,6 +402,7 @@ def set_forward_context(
         ubatch_slices,
         slot_mapping,
         kv_update_slot_mapping,
+        kv_read_mapping,
         kv_update_alias_groups,
         additional_kwargs,
         skip_compiled,
