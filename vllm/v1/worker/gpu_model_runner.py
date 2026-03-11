@@ -3338,6 +3338,11 @@ class GPUModelRunner(
     def _get_kv_read_mappings(
         self,
         slot_mappings: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None,
+        layer_read_sources: (
+            dict[str, dict[str, torch.Tensor]]
+            | list[dict[str, dict[str, torch.Tensor]]]
+            | None
+        ) = None,
     ) -> dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None:
         """Hook for token-level KV read routing.
 
@@ -3363,10 +3368,26 @@ class GPUModelRunner(
             return slot_mappings
 
         try:
-            kv_read_mappings = provider(
-                slot_mappings=slot_mappings,
-                shared_kv_cache_layers=self.shared_kv_cache_layers,
-            )
+            if layer_read_sources is None:
+                kv_read_mappings = provider(
+                    slot_mappings=slot_mappings,
+                    shared_kv_cache_layers=self.shared_kv_cache_layers,
+                )
+            else:
+                try:
+                    kv_read_mappings = provider(
+                        slot_mappings=slot_mappings,
+                        shared_kv_cache_layers=self.shared_kv_cache_layers,
+                        layer_read_sources=layer_read_sources,
+                    )
+                except TypeError as e:
+                    # Backward-compatible fallback for older plugin signatures.
+                    if "layer_read_sources" not in str(e):
+                        raise
+                    kv_read_mappings = provider(
+                        slot_mappings=slot_mappings,
+                        shared_kv_cache_layers=self.shared_kv_cache_layers,
+                    )
         except Exception:
             logger.exception(
                 "Failed to get KV read mappings from model callback; "
@@ -3399,6 +3420,38 @@ class GPUModelRunner(
             return slot_mappings
 
         return kv_read_mappings
+
+    def _build_layer_read_sources(
+        self,
+        attn_metadata: PerLayerAttnMetadata | None,
+    ) -> dict[str, dict[str, torch.Tensor]] | list[dict[str, dict[str, torch.Tensor]]] | None:
+        """Extract per-layer read-source tensors from built attention metadata."""
+        if attn_metadata is None:
+            return None
+
+        def _extract_one(
+            per_layer_md: dict[str, object] | None,
+        ) -> dict[str, dict[str, torch.Tensor]]:
+            out: dict[str, dict[str, torch.Tensor]] = {}
+            if per_layer_md is None:
+                return out
+            for layer_name, md in per_layer_md.items():
+                block_table = getattr(md, "block_table", None)
+                slot_mapping = getattr(md, "slot_mapping", None)
+                payload: dict[str, torch.Tensor] = {}
+                if torch.is_tensor(block_table):
+                    payload["block_table"] = block_table
+                if torch.is_tensor(slot_mapping):
+                    payload["slot_mapping"] = slot_mapping
+                if payload:
+                    out[layer_name] = payload
+            return out
+
+        if isinstance(attn_metadata, dict):
+            return _extract_one(attn_metadata)
+        if isinstance(attn_metadata, list):
+            return [_extract_one(md) for md in attn_metadata]
+        return None
 
     @torch.inference_mode()
     def execute_model(
@@ -3568,7 +3621,6 @@ class GPUModelRunner(
                 ubatch_slices=ubatch_slices_padded,
             )
             kv_update_slot_mappings = self._get_kv_update_slot_mappings(slot_mappings)
-            kv_read_mappings = self._get_kv_read_mappings(slot_mappings)
 
             attn_metadata, spec_decode_common_attn_metadata = (
                 self._build_attention_metadata(
@@ -3584,6 +3636,11 @@ class GPUModelRunner(
                     cascade_attn_prefix_lens=cascade_attn_prefix_lens,
                     slot_mappings=slot_mappings_by_group,
                 )
+            )
+            layer_read_sources = self._build_layer_read_sources(attn_metadata)
+            kv_read_mappings = self._get_kv_read_mappings(
+                slot_mappings,
+                layer_read_sources=layer_read_sources,
             )
 
             (
@@ -4759,6 +4816,11 @@ class GPUModelRunner(
                 ubatch_slices=ubatch_slices_padded if pad_attn else ubatch_slices,
                 for_cudagraph_capture=is_graph_capturing,
                 slot_mappings=slot_mappings_by_group,
+            )
+            layer_read_sources = self._build_layer_read_sources(attn_metadata)
+            kv_read_mappings = self._get_kv_read_mappings(
+                slot_mappings,
+                layer_read_sources=layer_read_sources,
             )
 
         with self.maybe_dummy_run_with_lora(
